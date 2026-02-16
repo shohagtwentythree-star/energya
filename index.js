@@ -7,7 +7,7 @@ const path = require('path');
 
 const app = express();
 const PORT = 3000;
-
+ 
 // CONFIGURATION
 const MASTER_SETUP_KEY = "1234"; 
 
@@ -15,7 +15,7 @@ const MASTER_SETUP_KEY = "1234";
 app.use(cors());
 app.use(express.json());
 
-// 2. DATABASE INITIALIZATION
+// 2. DATABASE INITIALIZATION 
 const dbs = {
   fabricators: new Datastore({ filename: 'fabricators.db', autoload: true }),
   pallets: new Datastore({ filename: 'pallets.db', autoload: true }),
