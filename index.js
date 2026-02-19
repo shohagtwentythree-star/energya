@@ -98,7 +98,8 @@ const systemLogger = (req, res, next) => {
   next();
 };
 
-app.use(systemLogger);
+// Disabled 
+// app.use(systemLogger);
 
 // --- 5. AUTHENTICATION ROUTES ---
 app.post('/auth/register', async (req, res) => {
