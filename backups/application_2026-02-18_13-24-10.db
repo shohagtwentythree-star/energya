@@ -1,4 +1,0 @@
-{"type":"user","username":"ShohagAhmed","password":"$2b$10$CoT38BtZ5KpzzYc8.Uj1q.bc47fzKigf9kBEi/xhgO51ERKk7Kxji","role":"admin","createdAt":"2026-02-14T14:50:29.888Z","_id":"WzReme8qZm2Rlr3Y"}
-{"type":"user","username":"a","password":"$2b$10$meXm.ini9SqqIldYDqWflui1BpMjileFF5dzz2WNEKUUGPq8DQfvS","role":"admin","createdAt":"2026-02-14T19:18:28.967Z","_id":"YSKr583s8K0snsHG"}
-{"$$indexCreated":{"fieldName":"username","unique":true,"sparse":false}}
-{"$$indexCreated":{"fieldName":"type","unique":false,"sparse":false}}

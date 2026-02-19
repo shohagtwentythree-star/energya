@@ -1,0 +1,22 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+
+backups/
+
+# Build outputs
+dist/
+build/
+
+# Logs and databases
+npm-debug.log*
+*.db
+*.sqlite
+
+# Environment variables (SECURITY)
+.env
+.env.local
+
+# OS generated files
+.DS_Store
+Thumbs.db
