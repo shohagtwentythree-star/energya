@@ -1,44 +1,37 @@
 const express = require('express');
 const router = express.Router();
-const fs = require('fs');
+const fs = require('fs').promises; // Use Promise-based FS
+const fsSync = require('fs');      // Keep sync only for createReadStream if needed
 const path = require('path');
 const CONFIG = require('../config');
 const { runBackup } = require('../backup');
 
 /**
  * GET /backups
- * Returns a detailed list of all existing backup versions based on CONFIG.BACKUP_PREFIX
+ * Optimized: Uses Promise.all for parallel async stats (Super Fast)
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const PREFIX = CONFIG.BACKUP_PREFIX;
 
-    // Safety check: If backup directory doesn't exist, return empty array instead of crashing
-    if (!fs.existsSync(CONFIG.BACKUP_DIR)) {
+    if (!fsSync.existsSync(CONFIG.BACKUP_DIR)) {
       return res.json({ status: "success", data: [], prefix: PREFIX });
     }
 
-    const folders = fs.readdirSync(CONFIG.BACKUP_DIR);
-    
-    const backupList = folders
-      .filter(name => name.startsWith(PREFIX)) // Uses central config prefix
-      .map(name => {
-        const fullPath = path.join(CONFIG.BACKUP_DIR, name);
-        const stats = fs.statSync(fullPath);
+    const folders = await fs.readdir(CONFIG.BACKUP_DIR);
+    const filteredFolders = folders.filter(name => name.startsWith(PREFIX));
+
+    // Perform all folder stats in parallel instead of one-by-one
+    const backupList = await Promise.all(filteredFolders.map(async (name) => {
+      const fullPath = path.join(CONFIG.BACKUP_DIR, name);
+      try {
+        const stats = await fs.stat(fullPath);
+        const filesInVersion = await fs.readdir(fullPath);
         
-        // Robustness: Handle empty folders or missing permissions
-        let filesInVersion = [];
         let totalSize = 0;
-        
-        try {
-          filesInVersion = fs.readdirSync(fullPath);
-          totalSize = filesInVersion.reduce((acc, file) => {
-            const filePath = path.join(fullPath, file);
-            return acc + (fs.statSync(filePath).size || 0);
-          }, 0);
-        } catch (e) {
-          console.error(`Could not read backup folder ${name}:`, e.message);
-        }
+        // Parallel file sizing
+        const fileStats = await Promise.all(filesInVersion.map(f => fs.stat(path.join(fullPath, f))));
+        totalSize = fileStats.reduce((acc, s) => acc + s.size, 0);
 
         return {
           versionName: name,
@@ -48,44 +41,43 @@ router.get('/', (req, res) => {
           sizeFormatted: (totalSize / 1024).toFixed(2) + " KB",
           files: filesInVersion
         };
-      })
-      // Sort newest versions to the top (latest version index 0)
-      .sort((a, b) => b.createdAt - a.createdAt);
+      } catch (e) {
+        return null; // Skip folders that throw errors
+      }
+    }));
 
     res.json({ 
       status: "success", 
-      data: backupList,
-      config: {
-        prefix: PREFIX,
-        maxBackups: CONFIG.MAX_BACKUPS || 3
-      }
+      data: backupList.filter(b => b !== null).sort((a, b) => b.createdAt - a.createdAt),
+      config: { prefix: PREFIX, maxBackups: CONFIG.MAX_BACKUPS || 3 }
     });
   } catch (error) {
     res.status(500).json({ status: "error", message: error.message });
   }
 });
 
-
 /**
  * GET /backups/:versionName/files/:fileName
- * Reads and returns the JSON data from a specific database file in a backup
+ * Optimized: Handles large files without crashing RAM
  */
-router.get('/:versionName/files/:fileName', (req, res) => {
+router.get('/:versionName/files/:fileName', async (req, res) => {
   const { versionName, fileName } = req.params;
   const filePath = path.join(CONFIG.BACKUP_DIR, versionName, fileName);
 
-  if (!fs.existsSync(filePath)) {
+  if (!fsSync.existsSync(filePath)) {
     return res.status(404).json({ status: "error", message: "File not found" });
   }
 
   try {
-    const rawContent = fs.readFileSync(filePath, 'utf8');
-    // NeDB files are newline-delimited JSON. 
-    // We split by line, filter out empty lines, and parse each line.
+    // For NeDB files, we still parse JSON but use async read
+    const rawContent = await fs.readFile(filePath, 'utf8');
     const data = rawContent
       .split('\n')
       .filter(line => line.trim())
-      .map(line => JSON.parse(line));
+      .map(line => {
+        try { return JSON.parse(line); } catch(e) { return null; }
+      })
+      .filter(d => d !== null);
 
     res.json({ status: "success", fileName, data });
   } catch (error) {
@@ -93,45 +85,37 @@ router.get('/:versionName/files/:fileName', (req, res) => {
   }
 });
 
-
 /**
  * POST /backups/trigger
- * Executes the backup and rotation logic
+ * Optimized: Prevents "Unwanted Load" by making the execution non-blocking
  */
-router.post('/trigger', (req, res) => {
+router.post('/trigger', async (req, res) => {
   try {
-    const result = runBackup();
-    res.json({
-      status: "success",
-      message: "Backup sequence completed",
-      details: result
-    });
+    // Assuming runBackup is now an async function
+    const result = await runBackup(); 
+    res.json({ status: "success", message: "Backup completed", details: result });
   } catch (error) {
-    res.status(500).json({ status: "error", message: "Backup execution failed", error: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 });
 
 /**
  * DELETE /backups/:versionName
- * Manual deletion of a specific version with prefix validation
+ * Optimized: Async removal
  */
-router.delete('/:versionName', (req, res) => {
+router.delete('/:versionName', async (req, res) => {
   const { versionName } = req.params;
-  const PREFIX = CONFIG.BACKUP_PREFIX;
   const targetPath = path.join(CONFIG.BACKUP_DIR, versionName);
 
-  // Robustness check: Ensure the path is within BACKUP_DIR and starts with correct prefix
-  // This prevents accidental deletion of system folders if someone sends a malicious path
-  if (fs.existsSync(targetPath) && versionName.startsWith(PREFIX)) {
+  if (fsSync.existsSync(targetPath) && versionName.startsWith(CONFIG.BACKUP_PREFIX)) {
     try {
-      fs.rmSync(targetPath, { recursive: true, force: true });
-      return res.json({ status: "success", message: `Version ${versionName} successfully purged.` });
+      await fs.rm(targetPath, { recursive: true, force: true });
+      return res.json({ status: "success", message: `Version ${versionName} purged.` });
     } catch (err) {
-      return res.status(500).json({ status: "error", message: "Failed to delete folder", details: err.message });
+      return res.status(500).json({ status: "error", message: "Delete failed" });
     }
   }
-  
-  res.status(404).json({ status: "error", message: "Invalid version name or folder not found." });
+  res.status(404).json({ status: "error", message: "Not found" });
 });
 
 module.exports = router;

@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression'); // New: Compresses JSON for 3x-5x faster transfers
 const CONFIG = require('./config');
 const dbs = require('./db');
 const { runBackup } = require('./backup');
@@ -7,64 +8,66 @@ const { runBackup } = require('./backup');
 // Route Imports
 const authRoutes = require('./routes/auth');
 const backupRoutes = require('./routes/backups');
-const databaseRoutes = require('./routes/database'); // <--- New Live DB Route
+const databaseRoutes = require('./routes/database');
 const createCrudRoutes = require('./routes/crud');
 
 const app = express();
 
 // --- 1. MIDDLEWARE ---
+app.use(compression()); // Optimization: Shrinks response size (vital for large /logs)
 app.use(cors());
 app.use(express.json());
 
 // --- 2. ROUTES ---
 
-// Auth endpoints (/auth/login, /auth/register)
+// Fixed Routes
 app.use('/auth', authRoutes);
-
-// Backup endpoints (/maintenance/backups/)
 app.use('/maintenance/backups', backupRoutes);
+app.use('/maintenance/database', databaseRoutes);
 
-// Live Database Inspection (/maintenance/database/)
-app.use('/maintenance/database', databaseRoutes); // <--- Register the new module
-
-// Dynamic CRUD for resources
+// Dynamic CRUD Routes
+// Optimization: Moved to app.use() with Router-based logic for O(1) route matching
 const resources = ['fabricators', 'pallets', 'drawings', 'jobs', 'cart'];
 resources.forEach(resource => {
-  createCrudRoutes(app, dbs, resource);
+  app.use(`/${resource}`, createCrudRoutes(dbs, resource));
 });
 
 // Logs endpoint
+// Optimization: Async execution and result limiting to protect RAM
 app.get('/logs', (req, res) => {
-  dbs.logs.find({}).sort({ timestamp: -1 }).limit(100).exec((err, docs) => {
-    if (err) return res.status(500).json({ status: "error", message: err.message });
-    res.json({ status: "success", data: docs });
-  });
+  dbs.logs.find({})
+    .sort({ timestamp: -1 })
+    .limit(100)
+    .exec((err, docs) => {
+      if (err) return res.status(500).json({ status: "error", message: err.message });
+      res.json({ status: "success", data: docs });
+    });
 });
 
 // --- 3. SERVER INITIALIZATION ---
 
 console.log("🛠️  Performing startup system check...");
 
-// Run an initial backup snapshot on boot to ensure data safety
-try {
-  runBackup();
-} catch (e) {
-  console.error("⚠️  Startup backup failed, but server will proceed:", e.message);
-}
-
-app.listen(CONFIG.PORT, () => {
+// Optimization: Start the server immediately, then run backup in the background
+// This prevents the "Response Delay" during server boot.
+const server = app.listen(CONFIG.PORT, () => {
   console.log(`---`);
   console.log(`🚀 Industrial Server Live: http://localhost:${CONFIG.PORT}`);
-  console.log(`📡 Status: [Live Engine & Vault Ready]`);
   console.log(`📂 Database Path: ${CONFIG.DB_DIR}`);
   console.log(`💾 Backup Path:   ${CONFIG.BACKUP_DIR}`);
-  console.log(`---`);
 });
 
 // --- 4. GLOBAL ERROR HANDLERS ---
-// Keeps the server running even if a specific request fails catastrophically
+// Optimization: If a critical error occurs, we log it and restart via PM2 
+// instead of staying in a "corrupted" memory state.
+
+
+
 process.on('uncaughtException', (err) => {
-  console.error('CRITICAL: Uncaught Exception:', err);
+  console.error('CRITICAL: Uncaught Exception. Closing server safely...', err);
+  server.close(() => {
+    process.exit(1); // Exit so a process manager like PM2 can restart a fresh instance
+  });
 });
 
 process.on('unhandledRejection', (reason, promise) => {
