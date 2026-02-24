@@ -34,6 +34,55 @@ router.get('/', async (req, res) => {
   }
 });
 
+// POST /database/factory-reset - WIPES ALL DATA EXCEPT PROTECTED
+// POST /database/factory-reset - WIPES ALL DATA EXCEPT PROTECTED
+router.post('/factory-reset', async (req, res) => {
+  try {
+    const { key } = req.body;
+
+    // 🛡️ SECURITY KEY CHECK
+    if (key !== 'Shohag4750') {
+      return res.status(401).json({ 
+        status: "error", 
+        message: "UNAUTHORIZED: Invalid Security Key. Access Logged." 
+      });
+    }
+
+    const rawFiles = await fs.readdir(CONFIG.DB_DIR);
+    const targets = rawFiles.filter(file => 
+      file.endsWith('.db') && !PROTECTED_FILES.includes(file)
+    );
+
+    // Delete files in parallel
+    await Promise.all(targets.map(file => fs.unlink(path.join(CONFIG.DB_DIR, file))));
+
+    res.json({ 
+      status: "success", 
+      message: `System Purged. ${targets.length} tables removed.` 
+    });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+
+// POST /database/config-update - UPDATES application.db
+router.post('/config-update', async (req, res) => {
+  try {
+    const { configData } = req.body; // Expecting an array of objects (lines)
+    const filePath = path.join(CONFIG.DB_DIR, 'application.db');
+    
+    // Convert array back to NeDB/JSONL format (one JSON object per line)
+    const content = configData.map(obj => JSON.stringify(obj)).join('\n') + '\n';
+    
+    await fs.writeFile(filePath, content, 'utf8');
+    res.json({ status: "success" });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+
 // GET /database/:fileName - Read records from a live file
 router.get('/:fileName', async (req, res) => {
   try {
