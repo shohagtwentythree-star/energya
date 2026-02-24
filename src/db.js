@@ -1,23 +1,34 @@
-const Datastore = require('@seald-io/nedb');
-const path = require('path');
-const CONFIG = require('./config');
+import { JSONFilePreset } from 'lowdb/node';
+import path from 'path';
+import CONFIG from './config.js'; // Extension is required in ESM
 
 const dbs = {};
 
-CONFIG.DB_NAMES.forEach(name => {
-  dbs[name] = new Datastore({ 
-    filename: path.join(CONFIG.DB_DIR, `${name}.db`), 
-    autoload: true 
-  });
-});
+/**
+ * INITIALIZATION LOOP
+ * We use an async loop to ensure every database is ready
+ * before the rest of the server logic attempts to use them.
+ */
+for (const name of CONFIG.DB_NAMES) {
+  const dbPath = path.join(CONFIG.DB_DIR, `${name}.json`);
+  
+  // 1. Define Default Data
+  // LowDB needs to know the structure of a new file.
+  const defaultData = name === 'application' 
+    ? { users: [], settings: {} } 
+    : { data: [] };
 
-// Indexing
-dbs.application.ensureIndex({ fieldName: 'username', unique: true });
-dbs.logs.ensureIndex({ fieldName: 'timestamp' });
+  // 2. Initialize the Preset
+  // This automatically reads the file OR creates it with defaultData if missing.
+  // We use structuredClone to prevent shared references in memory.
+  dbs[name] = await JSONFilePreset(dbPath, structuredClone(defaultData));
+}
 
-// Auto-compaction
-Object.values(dbs).forEach(db => {
-  db.persistence.setAutocompactionInterval(24 * 60 * 60 * 1000);
-});
+/**
+ * INDEXING & MAINTENANCE:
+ * NeDB's .ensureIndex() and .setAutocompactionInterval() are gone.
+ * 1. Searching: You now use high-speed native JS array methods (find/filter).
+ * 2. Compaction: Not needed; LowDB replaces the file on every write.
+ */
 
-module.exports = dbs;
+export default dbs;

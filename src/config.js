@@ -1,13 +1,13 @@
-const path = require('path');
-const fs = require('fs');
+import path from 'path';
+import fs from 'fs';
 
 const CONFIG = {
   PORT: 3000,
   MASTER_SETUP_KEY: "1234",
-  DB_DIR: path.join(__dirname, '..', 'database'),
-  BACKUP_DIR: path.join(__dirname, '..', 'backups'),
-  BACKUP_DIR: path.join(__dirname, '..', 'backups'),
-  BACKUP_PREFIX: "DB_v", // Change this one time here
+  // In ESM, __dirname is replaced by import.meta.dirname
+  DB_DIR: path.join(import.meta.dirname, '..', 'database'),
+  BACKUP_DIR: path.join(import.meta.dirname, '..', 'backups'),
+  BACKUP_PREFIX: "DB_v",
   MAX_BACKUPS: 3,
   DB_NAMES: ['fabricators', 'pallets', 'drawings', 'cart', 'application', 'logs']
 };
@@ -20,15 +20,16 @@ const CONFIG = {
   }
 });
 
-
-
-// 2. Ensure Database Files Exist (Create empty files if missing)
+// 2. Ensure Database Files Exist
+// Updated to .json for Lowdb compatibility
 CONFIG.DB_NAMES.forEach(name => {
-  const filePath = path.join(CONFIG.DB_DIR, `${name}.db`);
+  const filePath = path.join(CONFIG.DB_DIR, `${name}.json`);
   if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, ''); // Create empty file
-    console.log(`📄 Created database file: ${name}.db`);
+    // Lowdb expects at least an empty object or array to parse correctly
+    const initialData = name === 'application' ? { users: [] } : { data: [] };
+    fs.writeFileSync(filePath, JSON.stringify(initialData, null, 2));
+    console.log(`📄 Created JSON database file: ${name}.json`);
   }
 });
 
-module.exports = CONFIG;
+export default CONFIG;

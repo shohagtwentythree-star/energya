@@ -1,20 +1,19 @@
-const express = require('express');
-const cors = require('cors');
-const compression = require('compression'); // New: Compresses JSON for 3x-5x faster transfers
-const CONFIG = require('./config');
-const dbs = require('./db');
-const { runBackup } = require('./backup');
+import express from 'express';
+import cors from 'cors';
+import compression from 'compression';
+import CONFIG from './config.js'; // Extensions are mandatory in ESM
+import dbs from './db.js';
 
 // Route Imports
-const authRoutes = require('./routes/auth');
-const backupRoutes = require('./routes/backups');
-const databaseRoutes = require('./routes/database');
-const createCrudRoutes = require('./routes/crud');
+import authRoutes from './routes/auth.js';
+import backupRoutes from './routes/backups.js';
+import databaseRoutes from './routes/database.js';
+import createCrudRoutes from './routes/crud.js';
 
 const app = express();
 
 // --- 1. MIDDLEWARE ---
-app.use(compression()); // Optimization: Shrinks response size (vital for large /logs)
+app.use(compression()); 
 app.use(cors());
 app.use(express.json());
 
@@ -26,48 +25,42 @@ app.use('/maintenance/backups', backupRoutes);
 app.use('/maintenance/database', databaseRoutes);
 
 // Dynamic CRUD Routes
-// Optimization: Moved to app.use() with Router-based logic for O(1) route matching
 const resources = ['fabricators', 'pallets', 'drawings', 'cart'];
 resources.forEach(resource => {
+  // Pass the specific database instance for this resource
   app.use(`/${resource}`, createCrudRoutes(dbs, resource));
 });
 
 // Logs endpoint
-// Optimization: Async execution and result limiting to protect RAM
+// Optimization: Direct array access. Fast and no complex 'query' overhead.
 app.get('/logs', (req, res) => {
-  dbs.logs.find({})
-    .sort({ timestamp: -1 })
-    .limit(100)
-    .exec((err, docs) => {
-      if (err) return res.status(500).json({ status: "error", message: err.message });
-      res.json({ status: "success", data: docs });
-    });
+  try {
+    const logs = dbs.logs.data.data // Access: dbs.[filename].data.[key]
+      .slice() // Copy to avoid mutating original
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 100);
+
+    res.json({ status: "success", data: logs });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
 });
 
 // --- 3. SERVER INITIALIZATION ---
 
 console.log("🛠️  Performing startup system check...");
 
-// Optimization: Start the server immediately, then run backup in the background
-// This prevents the "Response Delay" during server boot.
+// In ESM with lowdb v7, we start the server once DBs are confirmed ready
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`---`);
   console.log(`🚀 Industrial Server Live: http://localhost:${CONFIG.PORT}`);
-  console.log(`📂 Database Path: ${CONFIG.DB_DIR}`);
-  console.log(`💾 Backup Path:   ${CONFIG.BACKUP_DIR}`);
+  console.log(`📂 Storage: JSON Flat Files via LowDB`);
 });
 
 // --- 4. GLOBAL ERROR HANDLERS ---
-// Optimization: If a critical error occurs, we log it and restart via PM2 
-// instead of staying in a "corrupted" memory state.
-
-
-
 process.on('uncaughtException', (err) => {
   console.error('CRITICAL: Uncaught Exception. Closing server safely...', err);
-  server.close(() => {
-    process.exit(1); // Exit so a process manager like PM2 can restart a fresh instance
-  });
+  server.close(() => process.exit(1));
 });
 
 process.on('unhandledRejection', (reason, promise) => {

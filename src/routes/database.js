@@ -1,21 +1,23 @@
-const express = require('express');
+import express from 'express';
+import { promises as fs } from 'fs';
+import fsSync from 'fs';
+import path from 'path';
+import CONFIG from '../config.js';
+
 const router = express.Router();
-const fs = require('fs').promises;
-const fsSync = require('fs');
-const path = require('path');
-const CONFIG = require('../config');
 
 // List of protected files that should never be touched via the Data API
-const PROTECTED_FILES = ['application.db'];
+// UPDATED: Now targeting .json extension for Lowdb
+const PROTECTED_FILES = ['application.json'];
 
-// GET /database - List all live .db files
+// GET /database - List all live .json files
 router.get('/', async (req, res) => {
   try {
     const rawFiles = await fs.readdir(CONFIG.DB_DIR);
     
-    // 🛡️ HIDDEN: application.db is now filtered out of the list
+    // 🛡️ HIDDEN: application.json is now filtered out of the list
     const dbFiles = rawFiles.filter(file => 
-      file.endsWith('.db') && !PROTECTED_FILES.includes(file)
+      file.endsWith('.json') && !PROTECTED_FILES.includes(file)
     );
 
     const filesData = await Promise.all(dbFiles.map(async (file) => {
@@ -35,7 +37,6 @@ router.get('/', async (req, res) => {
 });
 
 // POST /database/factory-reset - WIPES ALL DATA EXCEPT PROTECTED
-// POST /database/factory-reset - WIPES ALL DATA EXCEPT PROTECTED
 router.post('/factory-reset', async (req, res) => {
   try {
     const { key } = req.body;
@@ -50,38 +51,39 @@ router.post('/factory-reset', async (req, res) => {
 
     const rawFiles = await fs.readdir(CONFIG.DB_DIR);
     const targets = rawFiles.filter(file => 
-      file.endsWith('.db') && !PROTECTED_FILES.includes(file)
+      file.endsWith('.json') && !PROTECTED_FILES.includes(file)
     );
 
-    // Delete files in parallel
-    await Promise.all(targets.map(file => fs.unlink(path.join(CONFIG.DB_DIR, file))));
+    // Instead of deleting the files (which breaks Lowdb instances), 
+    // we reset them to an empty data structure.
+    const resetData = JSON.stringify({ data: [] }, null, 2);
+    
+    await Promise.all(targets.map(file => 
+      fs.writeFile(path.join(CONFIG.DB_DIR, file), resetData)
+    ));
 
     res.json({ 
       status: "success", 
-      message: `System Purged. ${targets.length} tables removed.` 
+      message: `System Purged. ${targets.length} tables cleared.` 
     });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
 
-
-// POST /database/config-update - UPDATES application.db
+// POST /database/config-update - UPDATES application.json
 router.post('/config-update', async (req, res) => {
   try {
-    const { configData } = req.body; // Expecting an array of objects (lines)
-    const filePath = path.join(CONFIG.DB_DIR, 'application.db');
+    const { configData } = req.body; // Expecting the full object to save
+    const filePath = path.join(CONFIG.DB_DIR, 'application.json');
     
-    // Convert array back to NeDB/JSONL format (one JSON object per line)
-    const content = configData.map(obj => JSON.stringify(obj)).join('\n') + '\n';
-    
-    await fs.writeFile(filePath, content, 'utf8');
+    // Lowdb uses standard JSON format. No more mapping to lines.
+    await fs.writeFile(filePath, JSON.stringify(configData, null, 2), 'utf8');
     res.json({ status: "success" });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
-
 
 // GET /database/:fileName - Read records from a live file
 router.get('/:fileName', async (req, res) => {
@@ -103,27 +105,22 @@ router.get('/:fileName', async (req, res) => {
     }
 
     const rawContent = await fs.readFile(filePath, 'utf8');
-    const lines = rawContent.split('\n').filter(l => l.trim());
+    const parsedData = JSON.parse(rawContent);
     
+    // Lowdb structures are usually { "data": [...] } or { "users": [...] }
+    const records = parsedData.data || parsedData.users || parsedData;
+
     // Keep performance limit to 1000 records
     const limit = 1000; 
-    const isTruncated = lines.length > limit;
-    const targetLines = isTruncated ? lines.slice(-limit) : lines;
-
-    const records = targetLines.map(l => {
-      try {
-        return JSON.parse(l);
-      } catch (e) {
-        return { _parseError: true, raw: l };
-      }
-    });
+    const isTruncated = Array.isArray(records) && records.length > limit;
+    const dataToSend = isTruncated ? records.slice(-limit) : records;
 
     res.json({ 
       status: "success", 
-      data: records,
+      data: dataToSend,
       meta: {
-        totalLines: lines.length,
-        showingLast: targetLines.length,
+        totalItems: Array.isArray(records) ? records.length : 1,
+        showingLast: Array.isArray(dataToSend) ? dataToSend.length : 1,
         truncated: isTruncated
       }
     });
@@ -132,4 +129,4 @@ router.get('/:fileName', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

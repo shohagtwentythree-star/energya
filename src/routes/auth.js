@@ -1,57 +1,69 @@
-const express = require('express');
+import express from 'express';
+import bcrypt from 'bcryptjs';
+import dbs from '../db.js';
+import CONFIG from '../config.js';
+
 const router = express.Router();
-const bcrypt = require('bcryptjs');
-const dbs = require('../db');
-const CONFIG = require('../config');
 
-// Helper to wrap NeDB findOne
-const findUser = (query) => new Promise((resolve, reject) => {
-  dbs.application.findOne(query, (err, doc) => err ? reject(err) : resolve(doc));
-});
-
-// --- 1. REGISTER (Existing) ---
+// --- 1. REGISTER ---
 router.post('/register', async (req, res) => {
   const { username, password, setupKey } = req.body;
+  
   if (setupKey !== CONFIG.MASTER_SETUP_KEY) {
     return res.status(401).json({ status: "error", message: "Invalid Master Setup Key" });
   }
 
   try {
-    const existingUser = await findUser({ type: 'user', username });
-    if (existingUser) return res.status(400).json({ status: "error", message: "User exists" });
+    // Lowdb v7: Direct array access for faster lookups
+    const existingUser = dbs.application.data.users.find(u => u.username === username);
+
+    if (existingUser) {
+      return res.status(400).json({ status: "error", message: "User exists" });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = {
-      type: 'user',
       username,
       password: hashedPassword,
       role: 'admin',
       createdAt: new Date().toISOString()
     };
 
-    dbs.application.insert(newUser, (err, doc) => {
-      if (err) return res.status(500).json({ status: "error", message: "Storage error" });
-      res.status(201).json({ status: "success", data: { username: doc.username } });
+    // Use .update() to modify the in-memory state and sync to application.json
+    await dbs.application.update(({ users }) => {
+      users.push(newUser);
     });
-  } catch (e) { res.status(500).send("Internal error"); }
+
+    res.status(201).json({ status: "success", data: { username: newUser.username } });
+  } catch (e) {
+    console.error('Registration Error:', e);
+    res.status(500).json({ status: "error", message: "Internal storage error" });
+  }
 });
 
-// --- 2. LOGIN (Existing) ---
+// --- 2. LOGIN ---
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   try {
-    const user = await findUser({ type: 'user', username });
-    if (!user) return res.status(401).json({ status: "error", message: "Invalid credentials" });
+    // Standard JS .find() on the loaded JSON data
+    const user = dbs.application.data.users.find(u => u.username === username);
+
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Invalid credentials" });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ status: "error", message: "Invalid credentials" });
+    if (!isMatch) {
+      return res.status(401).json({ status: "error", message: "Invalid credentials" });
+    }
 
     res.json({ status: "success", user: { username: user.username, role: user.role } });
-  } catch (err) { res.status(500).send("Login service unavailable"); }
+  } catch (err) {
+    res.status(500).json({ status: "error", message: "Login service unavailable" });
+  }
 });
 
-// --- 3. UPDATE USER (New Personnel Management) ---
-// This route handles both username changes and password resets
+// --- 3. UPDATE USER ---
 router.post('/update', async (req, res) => {
   const { currentUsername, newUsername, newPassword, key } = req.body;
 
@@ -61,29 +73,35 @@ router.post('/update', async (req, res) => {
   }
 
   try {
-    const user = await findUser({ type: 'user', username: currentUsername });
-    if (!user) return res.status(404).json({ status: "error", message: "User not found" });
+    let userFound = false;
 
-    const updateData = {};
-    if (newUsername) updateData.username = newUsername;
-    
-    // If a new password is provided, we must hash it before saving
-    if (newPassword) {
-      updateData.password = await bcrypt.hash(newPassword, 10);
+    // We use .update() to find and modify the user record safely
+    await dbs.application.update(({ users }) => {
+      const userIndex = users.findIndex(u => u.username === currentUsername);
+      
+      if (userIndex !== -1) {
+        userFound = true;
+        
+        if (newUsername) users[userIndex].username = newUsername;
+        
+        // Handle password hashing if a new password is provided
+        if (newPassword) {
+          users[userIndex].password = bcrypt.hashSync(newPassword, 10);
+        }
+        
+        users[userIndex].updatedAt = new Date().toISOString();
+      }
+    });
+
+    if (!userFound) {
+      return res.status(404).json({ status: "error", message: "User not found" });
     }
 
-    dbs.application.update(
-      { _id: user._id }, 
-      { $set: updateData }, 
-      {}, 
-      (err) => {
-        if (err) return res.status(500).json({ status: "error", message: "Update failed" });
-        res.json({ status: "success", message: "Personnel record updated" });
-      }
-    );
+    res.json({ status: "success", message: "Personnel record updated" });
   } catch (err) {
+    console.error('Update Error:', err);
     res.status(500).json({ status: "error", message: "System update error" });
   }
 });
 
-module.exports = router;
+export default router;

@@ -1,15 +1,14 @@
-const fs = require('fs');
-const path = require('path');
-const CONFIG = require('./config');
-const dbs = require('./db');
+import fs from 'fs';
+import path from 'path';
+import CONFIG from './config.js'; // Extension mandatory in ESM
+import dbs from './db.js';
 
 /**
  * runBackup
- * Creates a versioned snapshot of all database files.
+ * Creates a versioned snapshot of all lowdb JSON files.
  * Uses configuration from CONFIG for prefix and rotation limits.
  */
-const runBackup = () => {
-  // Use centralized configuration
+export const runBackup = () => {
   const PREFIX = CONFIG.BACKUP_PREFIX || "DB_BACKUP_v"; 
   const MAX_BACKUPS = CONFIG.MAX_BACKUPS || 3;
 
@@ -32,11 +31,10 @@ const runBackup = () => {
         return parseInt(numPart);
       })
       .filter(num => !isNaN(num))
-      .sort((a, b) => b - a); // Highest number first
+      .sort((a, b) => b - a);
 
     const nextVersionNum = versionNumbers.length > 0 ? versionNumbers[0] + 1 : 1;
     
-    // Format name with leading zeros for professional alignment (v001, v002)
     const formattedName = `${PREFIX}${nextVersionNum.toString().padStart(3, '0')}`;
     const targetDir = path.join(CONFIG.BACKUP_DIR, formattedName);
 
@@ -46,17 +44,18 @@ const runBackup = () => {
     }
 
     // 3. Copy files from live database to versioned backup
+    // UPDATED: Now looks for .json files for lowdb compatibility
     Object.keys(dbs).forEach(key => {
-      const sourcePath = path.join(CONFIG.DB_DIR, `${key}.db`);
+      const sourcePath = path.join(CONFIG.DB_DIR, `${key}.json`);
       if (fs.existsSync(sourcePath)) {
-        const destPath = path.join(targetDir, `${key}.db`);
+        const destPath = path.join(targetDir, `${key}.json`);
         fs.copyFileSync(sourcePath, destPath);
       }
     });
 
     console.log(`✨ Successfully archived to: ${formattedName}`);
 
-    // 4. Robust Rotation Logic (Keep only the latest MAX_BACKUPS)
+    // 4. Robust Rotation Logic
     const updatedEntries = fs.readdirSync(CONFIG.BACKUP_DIR)
       .filter(name => name.startsWith(PREFIX))
       .map(name => ({
@@ -64,14 +63,13 @@ const runBackup = () => {
         version: parseInt(name.replace(PREFIX, ""))
       }))
       .filter(item => !isNaN(item.version))
-      .sort((a, b) => b.version - a.version); // Newest versions at the top
+      .sort((a, b) => b.version - a.version);
 
     if (updatedEntries.length > MAX_BACKUPS) {
       const entriesToDelete = updatedEntries.slice(MAX_BACKUPS);
       
       entriesToDelete.forEach(entry => {
         const folderPath = path.join(CONFIG.BACKUP_DIR, entry.name);
-        // Force recursive deletion of the entire version folder
         fs.rmSync(folderPath, { recursive: true, force: true });
         console.log(`[Rotation] 🗑️  Purged old version: ${entry.name}`);
       });
@@ -86,8 +84,6 @@ const runBackup = () => {
 
   } catch (error) {
     console.error(`[Maintenance Error] ❌ ${error.message}`);
-    throw error; // Pass error up to the route handler
+    throw error;
   }
 };
-
-module.exports = { runBackup };

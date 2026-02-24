@@ -1,20 +1,21 @@
-const express = require('express');
+import express from 'express';
+import archiver from 'archiver';
+import multer from 'multer';
+import unzipper from 'unzipper';
+import os from 'os';
+import { promises as fs } from 'fs';
+import fsSync from 'fs';
+import path from 'path';
+import CONFIG from '../config.js';
+import { runBackup } from '../backup.js';
+
 const router = express.Router();
-const archiver = require('archiver');
-const multer = require('multer');
-const unzipper = require('unzipper');
-const os = require('os');
-const fs = require('fs').promises;
-const fsSync = require('fs');
-const path = require('path');
-const CONFIG = require('../config');
-const { runBackup } = require('../backup');
 
 // --- 🛡️ SECURITY CONFIGURATION ---
 // Files in this list will never be backed up, restored, or visible in the UI.
-const PROTECTED_FILES = ['application.db'];
+const PROTECTED_FILES = ['application.json'];
 
-// Route uploads to OS temp directory to prevent crashes if 'temp/' folder is missing
+// Route uploads to OS temp directory
 const upload = multer({ dest: os.tmpdir() });
 
 /**
@@ -37,11 +38,10 @@ router.get('/', async (req, res) => {
       try {
         const stats = await fs.stat(fullPath);
         
-        // 🛡️ SECURITY: Strip out application.db from the file list
+        // 🛡️ SECURITY: Strip out application.json from the file list
         const filesInVersion = (await fs.readdir(fullPath))
           .filter(f => !PROTECTED_FILES.includes(f));
         
-        // Parallel file sizing
         const fileStats = await Promise.all(filesInVersion.map(f => fs.stat(path.join(fullPath, f))));
         const totalSize = fileStats.reduce((acc, s) => acc + s.size, 0);
 
@@ -86,7 +86,6 @@ router.get('/:versionName/download', async (req, res) => {
   archive.on('error', (err) => res.status(500).send({ error: err.message }));
   archive.pipe(res);
 
-  // 🛡️ SECURITY: Manually add files to ZIP to ensure application.db is skipped
   const files = await fs.readdir(folderPath);
   for (const file of files) {
     if (!PROTECTED_FILES.includes(file)) {
@@ -104,7 +103,6 @@ router.get('/:versionName/download', async (req, res) => {
 router.get('/:versionName/files/:fileName', async (req, res) => {
   const { versionName, fileName } = req.params;
 
-  // 🛡️ SECURITY: Prevent inspection of config files
   if (PROTECTED_FILES.includes(fileName)) {
     return res.status(403).json({ status: "error", message: "Access Denied: System File" });
   }
@@ -116,23 +114,19 @@ router.get('/:versionName/files/:fileName', async (req, res) => {
 
   try {
     const rawContent = await fs.readFile(filePath, 'utf8');
-    const data = rawContent
-      .split('\n')
-      .filter(line => line.trim())
-      .map(line => {
-        try { return JSON.parse(line); } catch(e) { return null; }
-      })
-      .filter(d => d !== null);
+    const parsed = JSON.parse(rawContent);
+    
+    // Lowdb standard format: { "data": [...] }
+    const data = parsed.data || parsed.users || parsed;
 
     res.json({ status: "success", fileName, data });
   } catch (error) {
-    res.status(500).json({ status: "error", message: "Failed to parse database file" });
+    res.status(500).json({ status: "error", message: "Failed to parse JSON backup file" });
   }
 });
 
 /**
  * 4. POST /backups/trigger
- * Manually trigger a fresh system snapshot.
  */
 router.post('/trigger', async (req, res) => {
   try {
@@ -145,7 +139,6 @@ router.post('/trigger', async (req, res) => {
 
 /**
  * 5. POST /backups/restore-from-zip
- * Reconstructs the DB from an uploaded ZIP, skipping blacklisted files.
  */
 router.post('/restore-from-zip', upload.single('backupZip'), async (req, res) => {
   if (!req.file) return res.status(400).json({ status: "error", message: "No file uploaded" });
@@ -156,7 +149,6 @@ router.post('/restore-from-zip', upload.single('backupZip'), async (req, res) =>
   try {
     const directory = await unzipper.Open.file(zipPath);
     
-    // 🛡️ SECURITY: Only extract files NOT in the protected list
     for (const file of directory.files) {
       if (!PROTECTED_FILES.includes(file.path)) {
         const content = await file.buffer();
@@ -167,7 +159,7 @@ router.post('/restore-from-zip', upload.single('backupZip'), async (req, res) =>
     await fs.unlink(zipPath);
     res.json({ status: "success", message: "External ZIP restored. Preserving config..." });
 
-    // Force reboot to clear NeDB RAM cache
+    // Reboot to reload Lowdb memory state from new files
     setTimeout(() => { process.exit(0); }, 1000);
   } catch (error) {
     res.status(500).json({ status: "error", message: "Extraction failed: " + error.message });
@@ -176,7 +168,6 @@ router.post('/restore-from-zip', upload.single('backupZip'), async (req, res) =>
 
 /**
  * 6. POST /backups/:versionName/restore
- * Internal rollback, skipping blacklisted files.
  */
 router.post('/:versionName/restore', async (req, res) => {
   const { versionName } = req.params;
@@ -190,15 +181,15 @@ router.post('/:versionName/restore', async (req, res) => {
   try {
     const files = await fs.readdir(sourcePath);
     for (const file of files) {
-      // 🛡️ SECURITY: Overwrite ONLY .db files and skip protected ones
-      if (file.endsWith('.db') && !PROTECTED_FILES.includes(file)) {
+      // Restore ONLY .json files and skip protected ones
+      if (file.endsWith('.json') && !PROTECTED_FILES.includes(file)) {
         await fs.copyFile(path.join(sourcePath, file), path.join(livePath, file));
       }
     }
 
     res.json({ status: "success", message: `System rolled back to ${versionName}` });
 
-    // Force reboot to clear NeDB RAM cache
+    // Reboot to reload Lowdb memory state
     setTimeout(() => { process.exit(0); }, 1000);
   } catch (error) {
     res.status(500).json({ status: "error", message: "Restore operation failed" });
@@ -207,7 +198,6 @@ router.post('/:versionName/restore', async (req, res) => {
 
 /**
  * 7. DELETE /backups/:versionName
- * Permanently purges a backup folder from the disk.
  */
 router.delete('/:versionName', async (req, res) => {
   const { versionName } = req.params;
@@ -224,4 +214,4 @@ router.delete('/:versionName', async (req, res) => {
   res.status(404).json({ status: "error", message: "Not found" });
 });
 
-module.exports = router;
+export default router;
