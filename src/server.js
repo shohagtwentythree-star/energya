@@ -27,7 +27,7 @@ app.use('/maintenance/database', databaseRoutes);
 
 // Dynamic CRUD Routes
 // Optimization: Moved to app.use() with Router-based logic for O(1) route matching
-const resources = ['fabricators', 'pallets', 'drawings', 'jobs', 'cart'];
+const resources = ['fabricators', 'pallets', 'drawings', 'cart'];
 resources.forEach(resource => {
   app.use(`/${resource}`, createCrudRoutes(dbs, resource));
 });

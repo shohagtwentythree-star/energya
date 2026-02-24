@@ -1,16 +1,22 @@
 const express = require('express');
 const router = express.Router();
-const fs = require('fs').promises; // Use Promise-based FS
-const fsSync = require('fs');      // Keep sync for exists check
+const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 const CONFIG = require('../config');
 
+// List of protected files that should never be touched via the Data API
+const PROTECTED_FILES = ['application.db'];
+
 // GET /database - List all live .db files
-// Optimized: Non-blocking parallel stat fetching
 router.get('/', async (req, res) => {
   try {
     const rawFiles = await fs.readdir(CONFIG.DB_DIR);
-    const dbFiles = rawFiles.filter(file => file.endsWith('.db'));
+    
+    // 🛡️ HIDDEN: application.db is now filtered out of the list
+    const dbFiles = rawFiles.filter(file => 
+      file.endsWith('.db') && !PROTECTED_FILES.includes(file)
+    );
 
     const filesData = await Promise.all(dbFiles.map(async (file) => {
       const stats = await fs.stat(path.join(CONFIG.DB_DIR, file));
@@ -29,22 +35,28 @@ router.get('/', async (req, res) => {
 });
 
 // GET /database/:fileName - Read records from a live file
-// Optimized: Added a line-limit and async reading to prevent RAM crashes
 router.get('/:fileName', async (req, res) => {
   try {
-    const filePath = path.join(CONFIG.DB_DIR, req.params.fileName);
+    const { fileName } = req.params;
+
+    // 🛡️ SECURITY GUARD: Block manual URL access to config files
+    if (PROTECTED_FILES.includes(fileName)) {
+      return res.status(403).json({ 
+        status: "error", 
+        message: "ACCESS DENIED: System configuration files are restricted." 
+      });
+    }
+
+    const filePath = path.join(CONFIG.DB_DIR, fileName);
     
     if (!fsSync.existsSync(filePath)) {
       return res.status(404).json({ status: "error", message: "File not found" });
     }
 
-    // Optimization: Reading large files as a string is slow. 
-    // We use a buffer-safe async read.
     const rawContent = await fs.readFile(filePath, 'utf8');
-    
-    // Safety check: If file is massive, we only return the last 1000 lines 
-    // to prevent browser/server hang.
     const lines = rawContent.split('\n').filter(l => l.trim());
+    
+    // Keep performance limit to 1000 records
     const limit = 1000; 
     const isTruncated = lines.length > limit;
     const targetLines = isTruncated ? lines.slice(-limit) : lines;
@@ -53,7 +65,7 @@ router.get('/:fileName', async (req, res) => {
       try {
         return JSON.parse(l);
       } catch (e) {
-        return { _parseError: true, raw: l }; // Handle corrupted lines gracefully
+        return { _parseError: true, raw: l };
       }
     });
 

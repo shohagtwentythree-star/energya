@@ -9,7 +9,7 @@ const CONFIG = {
   BACKUP_DIR: path.join(__dirname, '..', 'backups'),
   BACKUP_PREFIX: "DB_v", // Change this one time here
   MAX_BACKUPS: 3,
-  DB_NAMES: ['fabricators', 'pallets', 'drawings', 'jobs', 'cart', 'application', 'logs']
+  DB_NAMES: ['fabricators', 'pallets', 'drawings', 'cart', 'application', 'logs']
 };
 
 // 1. Ensure Folders Exist
